@@ -1,0 +1,116 @@
+import hashlib
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
+
+from services.database import supabase
+
+
+# LOAD EMBEDDING MODEL
+model = SentenceTransformer(
+    "all-MiniLM-L6-v2"
+)
+
+
+# GENERATE HASH FROM RESUME CONTENT
+def generate_resume_hash(text):
+
+    return hashlib.md5(
+        text.encode("utf-8")
+    ).hexdigest()
+
+
+# CHECK WHETHER RESUME ALREADY EXISTS
+def resume_exists(resume_hash):
+
+    response = supabase.table(
+        "resume_chunks"
+    ).select(
+        "id"
+    ).eq(
+        "resume_hash",
+        resume_hash
+    ).limit(1).execute()
+
+    return len(response.data) > 0
+
+
+# CHUNK TEXT
+def chunk_text(text):
+
+    splitter = RecursiveCharacterTextSplitter(
+
+        chunk_size=350,
+        chunk_overlap=50,
+
+        separators=[
+            "\n\n",
+            "\n",
+            ". ",
+            " ",
+            ""
+        ]
+    )
+
+    chunks = splitter.split_text(text)
+
+    return chunks
+
+
+# GENERATE EMBEDDINGS
+def generate_embeddings(chunks):
+
+    embeddings = model.encode(
+
+        chunks,
+
+        batch_size=32,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=True
+
+    )
+
+    return embeddings.tolist()
+
+
+# MAIN FUNCTION TO PROCESS RESUME
+def process_resume(
+    filename,
+    text
+):
+
+    # GENERATE RESUME HASH
+    resume_hash = generate_resume_hash(text)
+
+    # CHECK DUPLICATE
+    if resume_exists(resume_hash):
+
+        print(f"Duplicate Resume Skipped: {filename}")
+
+        return
+
+    # CREATE CHUNKS
+    chunks = chunk_text(text)
+
+    # CREATE EMBEDDINGS
+    embeddings = generate_embeddings(chunks)
+
+    # STORE IN SUPABASE
+    for chunk, embedding in zip(chunks, embeddings):
+
+        supabase.table(
+            "resume_chunks"
+        ).insert({
+
+            "filename": filename,
+
+            "resume_hash": resume_hash,
+
+            "chunk": chunk,
+
+            "embedding": embedding
+
+        }).execute()
+
+    print(f"Resume Stored Successfully: {filename}")

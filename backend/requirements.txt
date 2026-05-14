@@ -4,3 +4,4 @@ langchain
 google-generativeai
 supabase
 python-dotenv
+fastapi-mail
