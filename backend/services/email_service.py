@@ -1,10 +1,13 @@
 import logging
 import os
+import smtplib
+import ssl
+from email.message import EmailMessage
 from html import escape
 from pathlib import Path
+from asyncio import to_thread
 
 from dotenv import load_dotenv
-from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -39,17 +42,15 @@ def _mail_config():
             f"Missing mail environment variables: {', '.join(missing)}"
         )
 
-    return ConnectionConfig(
-        MAIL_USERNAME=os.getenv("MAIL_USERNAME"),
-        MAIL_PASSWORD=os.getenv("MAIL_PASSWORD"),
-        MAIL_FROM=os.getenv("MAIL_FROM"),
-        MAIL_PORT=int(os.getenv("MAIL_PORT", "587")),
-        MAIL_SERVER=os.getenv("MAIL_SERVER", "smtp.gmail.com"),
-        MAIL_STARTTLS=_env_bool("MAIL_STARTTLS", True),
-        MAIL_SSL_TLS=_env_bool("MAIL_SSL_TLS", False),
-        USE_CREDENTIALS=True,
-        VALIDATE_CERTS=True,
-    )
+    return {
+        "username": os.getenv("MAIL_USERNAME"),
+        "password": os.getenv("MAIL_PASSWORD"),
+        "from_email": os.getenv("MAIL_FROM"),
+        "port": int(os.getenv("MAIL_PORT", "587")),
+        "server": os.getenv("MAIL_SERVER", "smtp.gmail.com"),
+        "starttls": _env_bool("MAIL_STARTTLS", True),
+        "ssl_tls": _env_bool("MAIL_SSL_TLS", False),
+    }
 
 
 def _email_shell(candidate_name, heading, body, role=None):
@@ -92,24 +93,47 @@ def _email_shell(candidate_name, heading, body, role=None):
 
 
 async def _send_email(to_email, candidate_name, role, subject, heading, body):
-    message = MessageSchema(
-        subject=subject,
-        recipients=[to_email],
-        body=_email_shell(
+    config = _mail_config()
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = config["from_email"]
+    message["To"] = to_email
+    message.set_content(
+        "This email contains an HTML message. Please view it in an HTML-compatible email client."
+    )
+    message.add_alternative(
+        _email_shell(
             candidate_name=candidate_name,
             heading=heading,
             body=body,
             role=role
         ),
-        subtype=MessageType.html
+        subtype="html"
     )
 
-    await FastMail(_mail_config()).send_message(message)
+    await to_thread(_send_smtp_message, config, message)
 
     return {
         "sent": True,
         "error": None
     }
+
+
+def _send_smtp_message(config, message):
+    context = ssl.create_default_context()
+
+    if config["ssl_tls"]:
+        with smtplib.SMTP_SSL(config["server"], config["port"], context=context) as smtp:
+            smtp.login(config["username"], config["password"])
+            smtp.send_message(message)
+        return
+
+    with smtplib.SMTP(config["server"], config["port"]) as smtp:
+        if config["starttls"]:
+            smtp.starttls(context=context)
+
+        smtp.login(config["username"], config["password"])
+        smtp.send_message(message)
 
 
 async def send_shortlist_email(candidate_email, candidate_name, role):

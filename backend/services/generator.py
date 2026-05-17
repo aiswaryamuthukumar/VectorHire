@@ -7,10 +7,21 @@ from pathlib import Path
 # Load environment variables
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-# Create Gemini client
-client = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
+client = None
+
+
+def get_gemini_client():
+    global client
+
+    if client is None:
+        api_key = os.getenv("GEMINI_API_KEY")
+
+        if not api_key:
+            raise RuntimeError("Missing GEMINI_API_KEY environment variable.")
+
+        client = genai.Client(api_key=api_key)
+
+    return client
 
 
 # ANALYZE RETRIEVED CHUNKS
@@ -52,7 +63,7 @@ def generate_response(
 
     try:
 
-        response = client.models.generate_content(
+        response = get_gemini_client().models.generate_content(
             model="gemini-3.1-flash-lite",
             contents=prompt
         )
@@ -112,7 +123,7 @@ Evidence:
 
     try:
 
-        response = client.models.generate_content(
+        response = get_gemini_client().models.generate_content(
             model="gemini-3.1-flash-lite",
             contents=prompt
         )

@@ -4,22 +4,37 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 
-# LOAD ENV VARIABLES
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+BASE_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(BASE_DIR / ".env")
 
-SUPABASE_URL = os.getenv(
-    "SUPABASE_URL"
-)
 
-SUPABASE_KEY = os.getenv(
-    "SUPABASE_KEY"
-)
+class SupabaseClientProxy:
+    def __init__(self):
+        self._client = None
 
-# CREATE CLIENT
-supabase = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY
-)
+    def _get_client(self):
+        if self._client is None:
+            supabase_url = os.getenv("SUPABASE_URL")
+            supabase_key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+            if not supabase_url or not supabase_key:
+                raise RuntimeError(
+                    "Missing Supabase configuration. Set SUPABASE_URL and SUPABASE_KEY "
+                    "or SUPABASE_SERVICE_ROLE_KEY in Render environment variables."
+                )
+
+            self._client = create_client(
+                supabase_url,
+                supabase_key
+            )
+
+        return self._client
+
+    def __getattr__(self, name):
+        return getattr(self._get_client(), name)
+
+
+supabase = SupabaseClientProxy()
 
 
 # STORE RESUME CHUNKS

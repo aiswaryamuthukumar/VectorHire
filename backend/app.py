@@ -3,6 +3,9 @@ from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from services.chunker import chunk_text
 from services.parser import extract_text_from_pdf
@@ -60,17 +63,36 @@ from services.otp_service import (
 
 from fastapi.middleware.cors import CORSMiddleware
 
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+
 app = FastAPI()
+
+
+def _get_cors_origins():
+    configured = os.getenv("CORS_ORIGINS") or os.getenv("FRONTEND_ORIGINS") or os.getenv("FRONTEND_URL") or ""
+    origins = [
+        origin.strip().rstrip("/")
+        for origin in configured.split(",")
+        if origin.strip()
+    ]
+
+    return origins or [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_get_cors_origins(),
+    allow_origin_regex=os.getenv("CORS_ORIGIN_REGEX", r"https://.*\.netlify\.app"),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-UPLOAD_FOLDER = "uploads"
+UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", str(BASE_DIR / "uploads"))
 
 os.makedirs(
     UPLOAD_FOLDER,
