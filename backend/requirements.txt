@@ -5,3 +5,5 @@ google-generativeai
 supabase
 python-dotenv
 fastapi-mail
+python-multipart
+uvicorn

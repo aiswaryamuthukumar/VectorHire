@@ -10,6 +10,12 @@ VALID_STATUSES = {
     "ai_reviewed"
 }
 
+FINAL_STATUSES = {
+    "shortlisted",
+    "rejected",
+    "interview"
+}
+
 
 def get_all_applicants():
 
@@ -57,6 +63,19 @@ def update_applicant_status(
         raise HTTPException(
             status_code=404,
             detail="Candidate not found"
+        )
+
+    current_status = (
+        existing.get("status") or "pending"
+    ).lower().strip()
+
+    if current_status in FINAL_STATUSES:
+        if normalized_status == current_status:
+            return existing
+
+        raise HTTPException(
+            status_code=409,
+            detail="Candidate workflow is locked after a final status is selected"
         )
 
     # Update applicant status

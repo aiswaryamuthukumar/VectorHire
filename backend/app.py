@@ -1,11 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import Depends, FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 
 import os
-import shutil
-import hashlib
-import re
 
 from services.chunker import chunk_text
 from services.parser import extract_text_from_pdf
@@ -25,17 +22,40 @@ from services.generator import (
 )
 
 from services.applicants import (
+    applicant_email_exists,
+    resume_hash_exists,
     store_applicant
+)
+
+from services.candidate_validation import (
+    detect_role_mismatch,
+    detect_suspicious_resume,
+    generate_file_hash,
+    is_valid_email,
+    validate_mobile_number,
+    validate_candidate_inputs,
+    validate_resume_bytes
 )
 
 from services.hr import (
     get_all_applicants,
-    update_applicant_status,
-    VALID_STATUSES
+    update_applicant_status
 )
 
 from services.email_service import (
+    send_candidate_otp_email,
     safely_send_status_email
+)
+
+from services.auth import (
+    require_recruiter
+)
+
+from services.otp_service import (
+    generate_otp,
+    is_verified,
+    store_otp,
+    verify_otp
 )
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -67,6 +87,24 @@ class ChatRequest(BaseModel):
     query: str
 
 
+class EmailOtpRequest(BaseModel):
+    email: str
+
+
+class VerifyEmailOtpRequest(BaseModel):
+    email: str
+    otp: str
+
+
+class MobileOtpRequest(BaseModel):
+    mobile_number: str
+
+
+class VerifyMobileOtpRequest(BaseModel):
+    mobile_number: str
+    otp: str
+
+
 def get_resume_filename(applicant):
     return applicant.get("resume_filename") or applicant.get("filename")
 
@@ -83,6 +121,13 @@ def normalize_applicant(applicant):
     normalized["status"] = (
         normalized.get("status") or "pending"
     ).lower()
+    normalized["duplicate_email"] = bool(normalized.get("duplicate_email", False))
+    normalized["duplicate_resume"] = bool(normalized.get("duplicate_resume", False))
+    normalized["role_mismatch"] = bool(normalized.get("role_mismatch", False))
+    normalized["suspicious_resume"] = bool(normalized.get("suspicious_resume", False))
+    normalized["email_verified"] = bool(normalized.get("email_verified", False))
+    normalized["mobile_verified"] = bool(normalized.get("mobile_verified", False))
+    normalized["fraud_flags"] = normalized.get("fraud_flags") or []
 
     return normalized
 
@@ -143,21 +188,66 @@ def home():
     }
 
 
-# GENERATE RESUME HASH
-def generate_resume_hash(text):
+@app.post("/send-email-otp")
+async def send_email_otp(request: EmailOtpRequest):
+    email = (request.email or "").strip().lower()
 
-    # NORMALIZE TEXT
-    text = text.lower()
+    if not is_valid_email(email):
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    ).strip()
+    otp = generate_otp()
+    store_otp("email", email, otp)
+    await send_candidate_otp_email(email, otp)
 
-    return hashlib.md5(
-        text.encode("utf-8")
-    ).hexdigest()
+    return JSONResponse(content={
+        "success": True,
+        "message": "OTP sent to email."
+    })
+
+
+@app.post("/verify-email-otp")
+async def verify_email_otp(request: VerifyEmailOtpRequest):
+    email = (request.email or "").strip().lower()
+
+    if not verify_otp("email", email, request.otp):
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
+
+    return JSONResponse(content={
+        "success": True,
+        "message": "Email verified."
+    })
+
+
+@app.post("/send-mobile-otp")
+async def send_mobile_otp(request: MobileOtpRequest):
+    mobile_number = validate_mobile_number(request.mobile_number)
+    otp = generate_otp()
+    store_otp("mobile", mobile_number, otp)
+
+    response = {
+        "success": True,
+        "message": "OTP sent to mobile."
+    }
+
+    if os.getenv("RETURN_DEV_OTP", "false").lower() == "true":
+        response["dev_otp"] = otp
+
+    print(f"VectorHire mobile OTP for {mobile_number}: {otp}")
+
+    return JSONResponse(content=response)
+
+
+@app.post("/verify-mobile-otp")
+async def verify_mobile_otp(request: VerifyMobileOtpRequest):
+    mobile_number = validate_mobile_number(request.mobile_number)
+
+    if not verify_otp("mobile", mobile_number, request.otp):
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
+
+    return JSONResponse(content={
+        "success": True,
+        "message": "Mobile verified."
+    })
 
 
 # APPLY FOR JOB
@@ -166,6 +256,7 @@ async def apply(
 
     name: str = Form(...),
     email: str = Form(...),
+    mobile_number: str = Form(...),
     role: str = Form(...),
 
     resume: UploadFile = File(...)
@@ -174,8 +265,39 @@ async def apply(
 
     try:
 
+        name, email, role = validate_candidate_inputs(
+            name,
+            email,
+            role,
+            resume
+        )
+        mobile_number = validate_mobile_number(mobile_number)
+
+        file_bytes = await resume.read()
+        validate_resume_bytes(file_bytes)
+
+        if not is_verified("email", email):
+            raise HTTPException(status_code=403, detail="Email verification required.")
+
+        if applicant_email_exists(email):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "success": False,
+                    "message": "You have already applied.",
+                    "candidate_name": name,
+                    "email": email
+                }
+            )
+
+        resume_hash = generate_file_hash(file_bytes)
+        duplicate_resume = resume_hash_exists(resume_hash) or check_resume_hash_exists(
+            resume_hash
+        )
+
         # CREATE UNIQUE FILENAME
-        unique_filename = f"{email}_{resume.filename}"
+        safe_original_filename = os.path.basename(resume.filename)
+        unique_filename = f"{email}_{safe_original_filename}"
 
         # SAVE FILE
         file_path = os.path.join(
@@ -185,40 +307,32 @@ async def apply(
 
         with open(file_path, "wb") as buffer:
 
-            shutil.copyfileobj(
-                resume.file,
-                buffer
-            )
+            buffer.write(file_bytes)
 
         # EXTRACT PDF TEXT
         extracted_text = extract_text_from_pdf(
             file_path
         )
 
-        # GENERATE HASH
-        resume_hash = generate_resume_hash(
+        role_mismatch = detect_role_mismatch(
+            role,
             extracted_text
         )
 
-        # CHECK RESUME DUPLICATE
-        if check_resume_hash_exists(
-            resume_hash
-        ):
+        suspicious_result = detect_suspicious_resume(
+            extracted_text
+        )
 
-            # DELETE DUPLICATE FILE
-            os.remove(file_path)
+        fraud_flags = []
 
-            return JSONResponse(content={
+        if duplicate_resume:
+            fraud_flags.append("duplicate_resume")
 
-                "success": False,
+        if role_mismatch:
+            fraud_flags.append("role_mismatch")
 
-                "message": "Duplicate resume already exists",
-
-                "candidate_name": name,
-
-                "email": email
-
-            })
+        if suspicious_result["suspicious"]:
+            fraud_flags.extend(suspicious_result["reasons"])
 
         # CHUNK TEXT
         chunks = chunk_text(
@@ -250,16 +364,34 @@ async def apply(
 
             email=email,
 
+            mobile_number=mobile_number,
+
             role=role,
 
-            resume_filename=unique_filename
+            resume_filename=unique_filename,
+
+            resume_hash=resume_hash,
+
+            duplicate_resume=duplicate_resume,
+
+            role_mismatch=role_mismatch,
+
+            suspicious_resume=suspicious_result["suspicious"],
+
+            fraud_flags=fraud_flags,
+
+            email_verified=True,
+
+            mobile_verified=False
 
         )
 
         # DUPLICATE APPLICANT
         if applicant_response.get("success") == False:
 
-            return JSONResponse(content={
+            status_code = 409 if applicant_response["message"] == "You have already applied." else 400
+
+            return JSONResponse(status_code=status_code, content={
 
                 "success": False,
 
@@ -282,11 +414,22 @@ async def apply(
 
             "email": email,
 
+            "mobile_number": mobile_number,
+
             "role": role,
 
-            "resume": unique_filename
+            "resume": unique_filename,
+
+            "email_verified": True,
+
+            "mobile_verified": False,
+
+            "review_flags": fraud_flags
 
         })
+
+    except HTTPException:
+        raise
 
     except Exception as e:
 
@@ -309,7 +452,7 @@ async def apply(
 
 # GET ALL APPLICANTS
 @app.get("/get-applicants")
-def get_applicants():
+def get_applicants(_recruiter=Depends(require_recruiter)):
 
     applicants = get_all_applicants()
 
@@ -321,7 +464,7 @@ def get_applicants():
 
 
 @app.get("/dashboard")
-def dashboard():
+def dashboard(_recruiter=Depends(require_recruiter)):
 
     applicants = get_all_applicants()
 
@@ -332,7 +475,10 @@ def dashboard():
 
 # UPDATE APPLICANT STATUS
 @app.put("/update-status")
-async def update_status(request: StatusUpdateRequest):
+async def update_status(
+    request: StatusUpdateRequest,
+    _recruiter=Depends(require_recruiter)
+):
 
     normalized_status = request.status.lower().strip()
 
@@ -378,7 +524,10 @@ async def _update_status_with_email(candidate_id, status):
 
 
 @app.post("/candidate/shortlist/{candidate_id}")
-async def shortlist_candidate(candidate_id: int):
+async def shortlist_candidate(
+    candidate_id: int,
+    _recruiter=Depends(require_recruiter)
+):
 
     return await _update_status_with_email(
         candidate_id,
@@ -387,7 +536,10 @@ async def shortlist_candidate(candidate_id: int):
 
 
 @app.post("/candidate/reject/{candidate_id}")
-async def reject_candidate(candidate_id: int):
+async def reject_candidate(
+    candidate_id: int,
+    _recruiter=Depends(require_recruiter)
+):
 
     return await _update_status_with_email(
         candidate_id,
@@ -396,7 +548,10 @@ async def reject_candidate(candidate_id: int):
 
 
 @app.post("/candidate/interview/{candidate_id}")
-async def interview_candidate(candidate_id: int):
+async def interview_candidate(
+    candidate_id: int,
+    _recruiter=Depends(require_recruiter)
+):
 
     return await _update_status_with_email(
         candidate_id,
@@ -454,7 +609,10 @@ def view_resume(filename: str):
 
 # AI RANK CANDIDATES
 @app.get("/ai-rank-candidates")
-def ai_rank_candidates(query: str):
+def ai_rank_candidates(
+    query: str,
+    _recruiter=Depends(require_recruiter)
+):
 
     # RETRIEVE + RANK
     ranked_candidates = build_candidate_matches(
@@ -492,7 +650,10 @@ def ai_rank_candidates(query: str):
 
 
 @app.post("/chatbot")
-async def chatbot(request: ChatRequest):
+async def chatbot(
+    request: ChatRequest,
+    _recruiter=Depends(require_recruiter)
+):
 
     matches = build_candidate_matches(
         request.query

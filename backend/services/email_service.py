@@ -145,6 +145,17 @@ async def send_interview_email(candidate_email, candidate_name, role):
     )
 
 
+async def send_candidate_otp_email(candidate_email, otp):
+    return await _send_email(
+        to_email=candidate_email,
+        candidate_name="Candidate",
+        role=None,
+        subject="VectorHire email verification code",
+        heading="Verify your email",
+        body=f"Your VectorHire verification code is {otp}. This code expires in 10 minutes."
+    )
+
+
 async def safely_send_status_email(applicant, status):
     try:
         if status == "shortlisted":
