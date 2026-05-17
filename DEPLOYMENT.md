@@ -9,6 +9,10 @@ Backend:
 https://vectorhire.onrender.com
 
 ---
+## HR Access
+
+Recruiter credentials are available for authorized reviewers/demo purposes only.
+Please contact the project owner for access.
 
 ## Deployment Architecture
 
