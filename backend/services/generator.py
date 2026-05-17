@@ -1,25 +1,32 @@
-from google import genai
 from dotenv import load_dotenv
 
 import os
 from pathlib import Path
+from threading import Lock
 
 # Load environment variables
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 client = None
+client_lock = Lock()
 
 
 def get_gemini_client():
     global client
 
-    if client is None:
-        api_key = os.getenv("GEMINI_API_KEY")
+    if client is not None:
+        return client
 
-        if not api_key:
-            raise RuntimeError("Missing GEMINI_API_KEY environment variable.")
+    with client_lock:
+        if client is None:
+            api_key = os.getenv("GEMINI_API_KEY")
 
-        client = genai.Client(api_key=api_key)
+            if not api_key:
+                raise RuntimeError("Missing GEMINI_API_KEY environment variable.")
+
+            from google import genai
+
+            client = genai.Client(api_key=api_key)
 
     return client
 

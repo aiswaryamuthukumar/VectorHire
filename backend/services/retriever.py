@@ -1,7 +1,6 @@
 from collections import defaultdict
 
 from services.database import supabase
-from services.embeddings import get_embedding_model
 
 
 # REMOVE DUPLICATE CHUNKS
@@ -30,8 +29,14 @@ def remove_duplicate_chunks(results):
 # SEARCH RELEVANT CHUNKS
 def search_resumes(query):
 
-    # Convert query into embedding
-    query_embedding = get_embedding_model().encode(query).tolist()
+    try:
+        from services.embeddings import generate_embeddings
+
+        # Convert query into embedding
+        query_embedding = generate_embeddings([query])[0]
+    except Exception as exc:
+        print(f"Embedding search disabled: {exc}")
+        return []
 
     # Search similar chunks
     response = supabase.rpc(

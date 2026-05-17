@@ -7,21 +7,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from services.chunker import chunk_text
-from services.parser import extract_text_from_pdf
-from services.embeddings import generate_embeddings
-
 from services.database import (
     store_resume_chunks,
     check_resume_hash_exists
-)
-
-from services.retriever import (
-    build_candidate_matches
-)
-
-from services.generator import (
-    generate_candidate_ranking
 )
 
 from services.applicants import (
@@ -98,6 +86,36 @@ os.makedirs(
     UPLOAD_FOLDER,
     exist_ok=True
 )
+
+
+def _extract_text_from_pdf(file_path):
+    from services.parser import extract_text_from_pdf
+
+    return extract_text_from_pdf(file_path)
+
+
+def _chunk_text(text):
+    from services.chunker import chunk_text
+
+    return chunk_text(text)
+
+
+def _generate_embeddings(chunks):
+    from services.embeddings import generate_embeddings
+
+    return generate_embeddings(chunks)
+
+
+def _build_candidate_matches(query):
+    from services.retriever import build_candidate_matches
+
+    return build_candidate_matches(query)
+
+
+def _generate_candidate_ranking(query, ranked_candidates):
+    from services.generator import generate_candidate_ranking
+
+    return generate_candidate_ranking(query, ranked_candidates)
 
 
 class StatusUpdateRequest(BaseModel):
@@ -332,7 +350,7 @@ async def apply(
             buffer.write(file_bytes)
 
         # EXTRACT PDF TEXT
-        extracted_text = extract_text_from_pdf(
+        extracted_text = _extract_text_from_pdf(
             file_path
         )
 
@@ -357,12 +375,12 @@ async def apply(
             fraud_flags.extend(suspicious_result["reasons"])
 
         # CHUNK TEXT
-        chunks = chunk_text(
+        chunks = _chunk_text(
             extracted_text
         )
 
         # GENERATE EMBEDDINGS
-        embeddings = generate_embeddings(
+        embeddings = _generate_embeddings(
             chunks
         )
 
@@ -637,14 +655,14 @@ def ai_rank_candidates(
 ):
 
     # RETRIEVE + RANK
-    ranked_candidates = build_candidate_matches(
+    ranked_candidates = _build_candidate_matches(
         query
     )
 
     ai_analysis = None
 
     if ranked_candidates:
-        ai_analysis = generate_candidate_ranking(
+        ai_analysis = _generate_candidate_ranking(
 
             query,
 
@@ -677,7 +695,7 @@ async def chatbot(
     _recruiter=Depends(require_recruiter)
 ):
 
-    matches = build_candidate_matches(
+    matches = _build_candidate_matches(
         request.query
     )
 
@@ -687,7 +705,7 @@ async def chatbot(
             "candidates": []
         })
 
-    ai_analysis = generate_candidate_ranking(
+    ai_analysis = _generate_candidate_ranking(
         request.query,
         [
             {
